@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interval Training Tracker</title>
+    <style>
+        :root {
+            --color-prepare: #FF9800;
+            --color-work: #4CAF50;
+            --color-rest: #2196F3;
+            --color-bg: #333333;
+            --text-main: #FFFFFF;
+            --safe-bottom: env(safe-area-inset-bottom, 0px);
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            min-height: 100%;
+            width: 100%;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text-main);
+            background-color: var(--color-bg);
+        }
+
+        body {
+            min-height: 100dvh;
+            overflow: hidden;
+            transition: background-color 0.5s ease;
+        }
+
+        body.prepare { background-color: var(--color-prepare); }
+        body.work { background-color: var(--color-work); }
+        body.rest { background-color: var(--color-rest); }
+
+        #setup-container {
+            min-height: 100dvh;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 24px;
+        }
+
+        #setup-container h1 {
+            margin: 0 0 10px;
+            font-size: clamp(1.8rem, 6vw, 3rem);
+        }
+
+        #setup-container p {
+            max-width: 420px;
+            margin: 0 0 18px;
+            line-height: 1.5;
+            opacity: 0.9;
+        }
+
+        #setup-container input {
+            width: min(100%, 360px);
+            padding: 12px;
+            font-size: 1rem;
+            color: inherit;
+            background: rgba(255,255,255,0.14);
+            border: 1px solid rgba(255,255,255,0.45);
+            border-radius: 10px;
+        }
+
+        #app-container {
+            display: none;
+            flex-direction: column;
+            min-height: 100dvh;
+            width: 100%;
+            padding: clamp(12px, 2vw, 24px);
+            padding-bottom: calc(clamp(12px, 2vw, 24px) + var(--safe-bottom));
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            min-height: 72px;
+            flex: 0 0 auto;
+        }
+
+        #round-name {
+            min-width: 0;
+            font-size: clamp(1.25rem, 3vw, 2rem);
+            font-weight: 700;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.3);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: clamp(4px, 1.5vw, 15px);
+            flex-shrink: 0;
+        }
+
+        button.icon-btn {
+            appearance: none;
+            -webkit-tap-highlight-color: transparent;
+            background: rgba(0,0,0,0.08);
+            border: 0;
+            border-radius: 50%;
+            cursor: pointer;
+            color: var(--text-main);
+            opacity: 0.9;
+            transition: opacity 0.2s, transform 0.1s, background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: clamp(44px, 9vw, 56px);
+            height: clamp(44px, 9vw, 56px);
+            padding: 8px;
+            touch-action: manipulation;
+        }
+
+        button.icon-btn:hover {
+            opacity: 1;
+            transform: scale(1.06);
+            background: rgba(0,0,0,0.16);
+        }
+
+        button.icon-btn:active { transform: scale(0.94); }
+
+        button.icon-btn svg {
+            width: 100%;
+            height: 100%;
+            fill: currentColor;
+            filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.35));
+        }
+
+        button#btn-playpause {
+            width: clamp(58px, 13vw, 76px);
+            height: clamp(58px, 13vw, 76px);
+            background: rgba(255,255,255,0.12);
+        }
+
+        main {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            text-shadow: 2px 2px 5px rgba(0,0,0,0.4);
+            padding: 8px 0;
+        }
+
+        #phase-name {
+            max-width: 100%;
+            font-size: clamp(1.35rem, 5vw, 3rem);
+            text-transform: uppercase;
+            letter-spacing: clamp(2px, 1vw, 5px);
+            line-height: 1.1;
+            margin: 0 0 clamp(4px, 1vh, 12px);
+            overflow-wrap: anywhere;
+        }
+
+        #timer-display {
+            font-size: clamp(4.5rem, 20vw, 18vw);
+            font-weight: 800;
+            line-height: 0.95;
+            letter-spacing: -0.04em;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .progress-container {
+            flex: 0 0 auto;
+            width: min(92%, 800px);
+            height: clamp(9px, 1.6vw, 14px);
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 999px;
+            margin: clamp(10px, 2vh, 20px) auto;
+            overflow: hidden;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        #progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: #fff;
+            transition: width 0.05s linear;
+        }
+
+        #assignments-grid {
+            flex: 0 1 auto;
+            width: 100%;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+            gap: clamp(8px, 1.5vw, 20px);
+            max-height: 32%;
+            overflow-y: auto;
+            padding: 0 clamp(0px, 3vw, 40px);
+            align-content: center;
+        }
+
+        .person-card {
+            min-width: 0;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            padding: clamp(12px, 2vw, 20px);
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .person-name {
+            font-size: clamp(1rem, 2.5vw, 1.5rem);
+            font-weight: 700;
+            margin-bottom: 6px;
+            opacity: 0.9;
+        }
+
+        .person-exercise {
+            font-size: clamp(1.15rem, 3vw, 2rem);
+            line-height: 1.15;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 600px) {
+            #app-container { padding-top: 8px; }
+
+            header {
+                min-height: 64px;
+            }
+
+            #round-name {
+                font-size: 1.15rem;
+                max-width: 45%;
+            }
+
+            main {
+                justify-content: center;
+            }
+
+            #timer-display {
+                font-size: min(25vw, 8rem);
+            }
+
+            .progress-container {
+                width: 94%;
+            }
+
+            #assignments-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 6px;
+                max-height: 28%;
+                padding: 0;
+            }
+
+            .person-card {
+                border-radius: 9px;
+                padding: 10px 6px;
+            }
+
+            .person-name {
+                font-size: clamp(0.78rem, 3.2vw, 1rem);
+                margin-bottom: 4px;
+            }
+
+            .person-exercise {
+                font-size: clamp(0.9rem, 4vw, 1.2rem);
+            }
+        }
+
+        @media (max-width: 380px) {
+            #assignments-grid {
+                grid-template-columns: 1fr;
+                max-height: 30%;
+            }
+
+            .person-card {
+                display: grid;
+                grid-template-columns: 35% 65%;
+                align-items: center;
+                text-align: left;
+                padding: 8px 12px;
+            }
+
+            .person-name { margin: 0; }
+        }
+
+        @media (max-height: 620px) and (orientation: landscape) {
+            #app-container { padding: 8px 16px; }
+            header { min-height: 52px; }
+            #timer-display { font-size: min(20vh, 10rem); }
+            #phase-name { font-size: 1.2rem; margin-bottom: 2px; }
+            .progress-container { margin: 7px auto; }
+            #assignments-grid { max-height: 27%; }
+            .person-card { padding: 7px 10px; }
+            .person-name { font-size: 0.9rem; margin-bottom: 2px; }
+            .person-exercise { font-size: 1.05rem; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                scroll-behavior: auto !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="setup-container">
+        <h1>Interval Training Setup</h1>
+        <p>Please select your workout configuration JSON file.</p>
+        <input type="file" id="json-upload" accept=".json" aria-label="Select workout configuration JSON file">
+    </div>
+
+    <div id="app-container">
+        <header>
+            <div id="round-name">Prepare</div>
+            <div class="controls">
+                <button class="icon-btn" id="btn-prev" title="Skip Backward" aria-label="Skip backward">
+                    <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                </button>
+                <button class="icon-btn" id="btn-playpause" title="Play/Pause" aria-label="Play or pause workout">
+                    <svg id="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    <svg id="icon-pause" viewBox="0 0 24 24" style="display: none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                </button>
+                <button class="icon-btn" id="btn-next" title="Skip Forward" aria-label="Skip forward">
+                    <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <main>
+            <div id="phase-name">Get Ready</div>
+            <div id="timer-display">00:00</div>
+        </main>
+
+        <div class="progress-container">
+            <div id="progress-bar-fill"></div>
+        </div>
+
+        <div id="assignments-grid"></div>
+    </div>
+
+    <script>
+        const setupContainer = document.getElementById('setup-container');
+        const appContainer = document.getElementById('app-container');
+        const fileInput = document.getElementById('json-upload');
+        const roundNameEl = document.getElementById('round-name');
+        const phaseNameEl = document.getElementById('phase-name');
+        const timerDisplayEl = document.getElementById('timer-display');
+        const progressBarFill = document.getElementById('progress-bar-fill');
+        const assignmentsGrid = document.getElementById('assignments-grid');
+        
+        const btnPrev = document.getElementById('btn-prev');
+        const btnPlayPause = document.getElementById('btn-playpause');
+        const btnNext = document.getElementById('btn-next');
+        const iconPlay = document.getElementById('icon-play');
+        const iconPause = document.getElementById('icon-pause');
+
+        let config = null;
+        let normalizedPeople = [];
+        let steps = [];
+        let currentStepIndex = 0;
+        let timeLeft = 0;
+        let totalStepTime = 0;
+        let isPaused = true;
+        let audioCtx = null;
+        let wakeLock = null; // Screen Wake Lock variable
+
+        let stepStartTime = 0;
+        let stepDurationMs = 0;
+        let animationFrameId = null;
+
+        fileInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        config = JSON.parse(e.target.result);
+                        processPeopleConfig();
+                        buildWorkoutSteps();
+                        initApp();
+                    } catch (error) {
+                        alert('Invalid JSON file. Please check the structure.');
+                        console.error(error);
+                    }
+                };
+                reader.readAsText(file);
+            }
+        });
+
+        function processPeopleConfig() {
+            normalizedPeople = config.people.map(p => {
+                if (typeof p === 'string') {
+                    return { name: p, speechName: p };
+                }
+                return {
+                    name: p.name,
+                    speechName: p.speechName || p.name
+                };
+            });
+        }
+
+        function buildWorkoutSteps() {
+            steps = [];
+            steps.push({
+                phase: 'prepare',
+                name: 'Get Ready',
+                duration: config.prepareSeconds,
+                assignments: null, 
+                nextAssignments: config.exercises.length > 0 ? config.exercises[0].assignments : null
+            });
+
+            config.exercises.forEach((ex, index) => {
+                steps.push({
+                    phase: 'work',
+                    name: ex.name,
+                    duration: config.defaultWorkSeconds,
+                    assignments: ex.assignments,
+                    nextAssignments: ex.restAssignments || null
+                });
+
+                steps.push({
+                    phase: 'rest',
+                    name: 'Rest & Stretch',
+                    duration: config.defaultRestSeconds,
+                    assignments: ex.restAssignments,
+                    nextAssignments: config.exercises[index + 1] ? config.exercises[index + 1].assignments : null
+                });
+            });
+        }
+
+        // Screen Wake Lock functionality
+        async function requestWakeLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    wakeLock.addEventListener('release', () => {
+                        console.log('Screen Wake Lock released');
+                    });
+                    console.log('Screen Wake Lock active');
+                } catch (err) {
+                    console.error(`Wake Lock error: ${err.name}, ${err.message}`);
+                }
+            }
+        }
+
+        // Re-request wake lock when returning to the app
+        document.addEventListener('visibilitychange', async () => {
+            if (wakeLock !== null && document.visibilityState === 'visible') {
+                requestWakeLock();
+            }
+        });
+
+        function initApp() {
+            setupContainer.style.display = 'none';
+            appContainer.style.display = 'flex';
+            currentStepIndex = 0;
+            
+            // Request the wake lock as soon as the app moves past the setup phase
+            requestWakeLock();
+            
+            loadStep(currentStepIndex);
+        }
+
+        function loadStep(index) {
+            if (index < 0 || index >= steps.length) {
+                endWorkout();
+                return;
+            }
+            const step = steps[index];
+            totalStepTime = step.duration;
+            stepDurationMs = totalStepTime * 1000;
+            stepStartTime = performance.now();
+            timeLeft = totalStepTime;
+            
+            document.body.className = step.phase; 
+            roundNameEl.textContent = step.name;
+            phaseNameEl.textContent = step.phase;
+
+            renderAssignments(step.assignments);
+            updateTimeDisplay();
+            progressBarFill.style.width = '0%';
+
+            if (audioCtx && audioCtx.state !== 'suspended') {
+                playBeep(800, 440);
+            }
+
+            setTimeout(() => {
+                if (!(index === 0 && isPaused)) {
+                    checkImmediateAnnouncement(step);
+                }
+            }, 900);
+        }
+
+        function renderAssignments(assignments) {
+            assignmentsGrid.innerHTML = '';
+            if (!assignments) {
+                normalizedPeople.forEach(person => {
+                    const card = document.createElement('div');
+                    card.className = 'person-card';
+                    card.innerHTML = `<div class="person-name">${person.name}</div><div class="person-exercise">Get Ready!</div>`;
+                    assignmentsGrid.appendChild(card);
+                });
+                return;
+            }
+
+            normalizedPeople.forEach(person => {
+                const task = assignments[person.name] || 'Rest';
+                const card = document.createElement('div');
+                card.className = 'person-card';
+                card.innerHTML = `<div class="person-name">${person.name}</div><div class="person-exercise">${task}</div>`;
+                assignmentsGrid.appendChild(card);
+            });
+        }
+
+        function playBeep(durationMs, frequency) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+            
+            gain.gain.setValueAtTime(1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + (durationMs / 1000));
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.start();
+            osc.stop(audioCtx.currentTime + (durationMs / 1000));
+        }
+
+        function togglePlayPause() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            isPaused = !isPaused;
+            if (isPaused) {
+                cancelAnimationFrame(animationFrameId);
+                iconPlay.style.display = 'block';
+                iconPause.style.display = 'none';
+            } else {
+                window.speechSynthesis.speak(new SpeechSynthesisUtterance('')); 
+                
+                if (currentStepIndex === 0 && timeLeft === totalStepTime) {
+                    playBeep(800, 440);
+                    setTimeout(() => {
+                        checkImmediateAnnouncement(steps[0]);
+                    }, 900);
+                }
+
+                stepStartTime = performance.now() - ((totalStepTime - timeLeft) * 1000);
+                startTimerLoop();
+
+                iconPlay.style.display = 'none';
+                iconPause.style.display = 'block';
+            }
+        }
+
+        function startTimerLoop() {
+            cancelAnimationFrame(animationFrameId);
+
+            function frame(now) {
+                if (isPaused) return;
+
+                const elapsedMs = now - stepStartTime;
+                const remainingMs = Math.max(0, stepDurationMs - elapsedMs);
+                const newTimeLeft = Math.ceil(remainingMs / 1000);
+
+                const progressPercent = Math.min(100, (elapsedMs / stepDurationMs) * 100);
+                progressBarFill.style.width = progressPercent + '%';
+
+                if (newTimeLeft !== timeLeft) {
+                    timeLeft = newTimeLeft;
+                    updateTimeDisplay();
+
+                    if (timeLeft > 0 && timeLeft <= 3) {
+                        playBeep(200, 600);
+                    }
+
+                    checkAnnouncements();
+                }
+
+                if (remainingMs > 0) {
+                    animationFrameId = requestAnimationFrame(frame);
+                } else {
+                    currentStepIndex++;
+                    loadStep(currentStepIndex);
+                    if (currentStepIndex < steps.length && !isPaused) {
+                        startTimerLoop();
+                    }
+                }
+            }
+
+            animationFrameId = requestAnimationFrame(frame);
+        }
+
+        function updateTimeDisplay() {
+            const minutes = Math.floor(timeLeft / 60);
+            const seconds = timeLeft % 60;
+            timerDisplayEl.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        function skipNext() {
+            cancelAnimationFrame(animationFrameId);
+            if (currentStepIndex < steps.length - 1) {
+                currentStepIndex++;
+                loadStep(currentStepIndex);
+                if (!isPaused) startTimerLoop();
+            } else {
+                endWorkout();
+            }
+        }
+
+        function skipPrev() {
+            cancelAnimationFrame(animationFrameId);
+            if (currentStepIndex > 0) {
+                currentStepIndex--;
+                loadStep(currentStepIndex);
+                if (!isPaused) startTimerLoop();
+            }
+        }
+
+        function endWorkout() {
+            cancelAnimationFrame(animationFrameId);
+            isPaused = true;
+            iconPlay.style.display = 'block';
+            iconPause.style.display = 'none';
+            document.body.className = '';
+            document.body.style.backgroundColor = 'var(--color-bg)';
+            roundNameEl.textContent = "Workout Complete";
+            phaseNameEl.textContent = "Done";
+            timerDisplayEl.textContent = "00:00";
+            progressBarFill.style.width = '100%';
+            assignmentsGrid.innerHTML = '';
+        }
+
+        function checkImmediateAnnouncement(step) {
+            const announceTime = config.announceNextSecondsBeforeEnd || 10;
+            if (step.nextAssignments && step.duration <= announceTime) {
+                speakAssignments(step.nextAssignments);
+            }
+        }
+
+        function checkAnnouncements() {
+            const step = steps[currentStepIndex];
+            const announceTime = config.announceNextSecondsBeforeEnd || 10;
+
+            if (timeLeft === announceTime && step.nextAssignments && step.duration > announceTime) {
+                speakAssignments(step.nextAssignments);
+            }
+        }
+
+        function speakAssignments(assignments) {
+            if (!assignments) return;
+
+            const tasks = normalizedPeople.map(person => assignments[person.name]).filter(Boolean);
+            const firstTask = tasks[0];
+            const allSame = tasks.length === normalizedPeople.length && tasks.every(task => task === firstTask);
+
+            let announcement = "Up next. ";
+            if (allSame) {
+                announcement += `Everyone, ${firstTask}.`;
+            } else {
+                normalizedPeople.forEach(person => {
+                    if (assignments[person.name]) {
+                        announcement += `${person.speechName}, ${assignments[person.name]}. `;
+                    }
+                });
+            }
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(announcement));
+        }
+
+        btnPlayPause.addEventListener('click', togglePlayPause);
+        btnNext.addEventListener('click', skipNext);
+        btnPrev.addEventListener('click', skipPrev);
+    </script>
+</body>
+</html>
