@@ -412,6 +412,11 @@
         // Participation is independent of the current exercise/step, so a person
         // stays on or off until their card is clicked again.
         const activePeople = new Map();
+        let announcementTimeoutId = null;
+        let announcementSpokenForStep = -1;
+        let lastSpeechDurationMs = 0;
+        const announcementSafetyMarginMs = 450;
+        const defaultSpeechWordsPerMinute = 100;
 
         fileInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
@@ -528,15 +533,15 @@
             updateTimeDisplay();
             progressBarFill.style.width = '0%';
 
+            announcementSpokenForStep = -1;
+            cancelAnnouncement();
+
             if (audioCtx && audioCtx.state !== 'suspended') {
-                playBeep(800, 440);
+                // Higher-pitched, slightly longer cue for the start of work.
+                playBeep(step.type === 'work' ? 950 : 440, step.type === 'work' ? 260 : 800);
             }
 
-            setTimeout(() => {
-                if (!(index === 0 && isPaused)) {
-                    checkImmediateAnnouncement(step);
-                }
-            }, 900);
+            if (!isPaused) scheduleNextAnnouncement(step);
         }
 
         function renderAssignments(assignments) {
@@ -623,19 +628,18 @@
             isPaused = !isPaused;
             if (isPaused) {
                 cancelAnimationFrame(animationFrameId);
+                cancelAnnouncement();
                 iconPlay.style.display = 'block';
                 iconPause.style.display = 'none';
             } else {
-                window.speechSynthesis.speak(new SpeechSynthesisUtterance('')); 
+                window.speechSynthesis.speak(new SpeechSynthesisUtterance(''));
                 
                 if (currentStepIndex === 0 && timeLeft === totalStepTime) {
-                    playBeep(800, 440);
-                    setTimeout(() => {
-                        checkImmediateAnnouncement(steps[0]);
-                    }, 900);
+                    playBeep(950, 260);
                 }
 
                 stepStartTime = performance.now() - ((totalStepTime - timeLeft) * 1000);
+                scheduleNextAnnouncement(steps[currentStepIndex]);
                 startTimerLoop();
 
                 iconPlay.style.display = 'none';
@@ -664,7 +668,6 @@
                         playBeep(200, 600);
                     }
 
-                    checkAnnouncements();
                 }
 
                 if (remainingMs > 0) {
@@ -689,6 +692,8 @@
 
         function skipNext() {
             cancelAnimationFrame(animationFrameId);
+            cancelAnnouncement();
+            window.speechSynthesis.cancel();
             if (currentStepIndex < steps.length - 1) {
                 currentStepIndex++;
                 loadStep(currentStepIndex);
@@ -700,6 +705,8 @@
 
         function skipPrev() {
             cancelAnimationFrame(animationFrameId);
+            cancelAnnouncement();
+            window.speechSynthesis.cancel();
             if (currentStepIndex > 0) {
                 currentStepIndex--;
                 loadStep(currentStepIndex);
@@ -709,6 +716,8 @@
 
         function endWorkout() {
             cancelAnimationFrame(animationFrameId);
+            cancelAnnouncement();
+            window.speechSynthesis.cancel();
             isPaused = true;
             iconPlay.style.display = 'block';
             iconPause.style.display = 'none';
@@ -721,46 +730,107 @@
             assignmentsGrid.innerHTML = '';
         }
 
-        function checkImmediateAnnouncement(step) {
-            const announceTime = config.announceNextSecondsBeforeEnd || 10;
-            if (step.nextAssignments && step.duration <= announceTime) {
-                speakAssignments(step.nextAssignments);
-            }
-        }
-
-        function checkAnnouncements() {
-            const step = steps[currentStepIndex];
-            const announceTime = config.announceNextSecondsBeforeEnd || 10;
-
-            if (timeLeft === announceTime && step.nextAssignments && step.duration > announceTime) {
-                speakAssignments(step.nextAssignments);
-            }
-        }
-
-        function speakAssignments(assignments) {
-            if (!assignments) return;
-
-            // Only announce people who are currently participating.
+        function buildAnnouncementText(assignments) {
+            if (!assignments) return '';
             const activeAssignments = normalizedPeople.filter(person =>
                 activePeople.get(person.name) !== false && assignments[person.name]
             );
-
-            if (activeAssignments.length === 0) return;
+            if (!activeAssignments.length) return '';
 
             const tasks = activeAssignments.map(person => assignments[person.name]);
-            const firstTask = tasks[0];
-            const allSame = activeAssignments.length > 1 &&
-                            tasks.every(task => task === firstTask);
+            const allSame = activeAssignments.length > 1 && tasks.every(task => task === tasks[0]);
 
-            let announcement = "Up next. ";
+            let announcement = 'Up next. ';
             if (allSame) {
-                announcement += `Everyone, ${firstTask}.`;
+                announcement += `Everyone, ${tasks[0]}.`;
             } else {
                 activeAssignments.forEach(person => {
                     announcement += `${person.speechName}, ${assignments[person.name]}. `;
                 });
             }
-            window.speechSynthesis.speak(new SpeechSynthesisUtterance(announcement));
+            return announcement.trim();
+        }
+
+        function estimateSpeechDurationMs(text) {
+            if (!text) return 0;
+            const words = text.trim().split(/\s+/).filter(Boolean).length;
+            const punctuationCount = (text.match(/[.,!?;:]/g) || []).length;
+            const baseMs = (words / defaultSpeechWordsPerMinute) * 60000;
+            const punctuationMs = punctuationCount * 100;
+            let estimate = baseMs + punctuationMs;
+
+            if (lastSpeechDurationMs > 0) {
+                // Blend in observed speech duration to calibrate to the current browser/voice.
+                let ratio = lastSpeechDurationMs / Math.max(1, baseMs);
+                ratio = Math.max(0.8, Math.min(1.25, ratio));
+                estimate *= ratio;
+            }
+            return estimate;
+        }
+
+        function cancelAnnouncement() {
+            if (announcementTimeoutId !== null) {
+                clearTimeout(announcementTimeoutId);
+                announcementTimeoutId = null;
+            }
+        }
+
+        function scheduleNextAnnouncement(step) {
+            cancelAnnouncement();
+            if (!step || !step.nextAssignments || isPaused || announcementSpokenForStep === currentStepIndex) return;
+
+            const text = buildAnnouncementText(step.nextAssignments);
+            if (!text) return;
+
+            const estimatedMs = estimateSpeechDurationMs(text);
+            const elapsedMs = performance.now() - stepStartTime;
+            const remainingMs = Math.max(0, stepDurationMs - elapsedMs);
+            const delayMs = Math.max(0, remainingMs - estimatedMs - announcementSafetyMarginMs);
+
+            announcementTimeoutId = setTimeout(() => {
+                announcementTimeoutId = null;
+                if (isPaused || announcementSpokenForStep === currentStepIndex) return;
+                speakAssignments(step.nextAssignments);
+                announcementSpokenForStep = currentStepIndex;
+            }, delayMs);
+        }
+
+        function speakAssignments(assignments) {
+            const announcement = buildAnnouncementText(assignments);
+            if (!announcement) return;
+
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(announcement);
+            
+            // Voice selection logic
+            const isAndroid = /Android/i.test(navigator.userAgent);
+            if (!isAndroid) {
+                const voices = window.speechSynthesis.getVoices();
+                
+                // Target standard default female voices available on your system
+                const defaultFemaleVoice = voices.find(v => /(libby|zira|aria|female)/i.test(v.name));
+                console.log(defaultFemaleVoice);
+                
+                if (defaultFemaleVoice) {
+                    utterance.voice = defaultFemaleVoice;
+                }
+            }
+
+            let startedAt = 0;
+
+            utterance.onstart = () => {
+                startedAt = performance.now();
+            };
+            utterance.onend = () => {
+                if (startedAt) {
+                    const actualMs = performance.now() - startedAt;
+                    lastSpeechDurationMs = lastSpeechDurationMs > 0
+                        ? lastSpeechDurationMs * 0.65 + actualMs * 0.35
+                        : actualMs;
+                }
+            };
+
+            window.speechSynthesis.speak(utterance);
         }
 
         btnPlayPause.addEventListener('click', togglePlayPause);
