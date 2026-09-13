@@ -212,6 +212,37 @@
             padding: clamp(12px, 2vw, 20px);
             text-align: center;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            transition: opacity 0.2s, background 0.2s, transform 0.1s;
+            touch-action: manipulation;
+        }
+
+        .person-card:hover {
+            background: rgba(0, 0, 0, 0.28);
+        }
+
+        .person-card:active {
+            transform: scale(0.98);
+        }
+
+        .person-card.inactive {
+            background: rgba(128, 128, 128, 0.42);
+            opacity: 0.65;
+        }
+
+        .person-card.inactive:hover {
+            background: rgba(128, 128, 128, 0.5);
+        }
+
+        .person-card.inactive .person-exercise {
+            display: none;
+        }
+
+        .person-card:focus-visible {
+            outline: 3px solid rgba(255,255,255,0.9);
+            outline-offset: 2px;
         }
 
         .person-name {
@@ -315,7 +346,7 @@
 
     <div id="setup-container">
         <h1>Interval Training Setup</h1>
-        <p>Please select your workout configuration JSON file.</p>
+        <p>Please select your workout configuration JSON file. During the workout, tap a person's card to toggle their participation.</p>
         <input type="file" id="json-upload" accept=".json" aria-label="Select workout configuration JSON file">
     </div>
 
@@ -378,6 +409,10 @@
         let stepDurationMs = 0;
         let animationFrameId = null;
 
+        // Participation is independent of the current exercise/step, so a person
+        // stays on or off until their card is clicked again.
+        const activePeople = new Map();
+
         fileInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
             if (file) {
@@ -407,6 +442,9 @@
                     speechName: p.speechName || p.name
                 };
             });
+
+            activePeople.clear();
+            normalizedPeople.forEach(person => activePeople.set(person.name, true));
         }
 
         function buildWorkoutSteps() {
@@ -430,7 +468,7 @@
 
                 steps.push({
                     phase: 'rest',
-                    name: 'Rest & Stretch',
+                    name: ex.name,
                     duration: config.defaultRestSeconds,
                     assignments: ex.restAssignments,
                     nextAssignments: config.exercises[index + 1] ? config.exercises[index + 1].assignments : null
@@ -503,24 +541,58 @@
 
         function renderAssignments(assignments) {
             assignmentsGrid.innerHTML = '';
-            if (!assignments) {
-                normalizedPeople.forEach(person => {
-                    const card = document.createElement('div');
-                    card.className = 'person-card';
-                    card.innerHTML = `<div class="person-name">${person.name}</div><div class="person-exercise">Get Ready!</div>`;
-                    assignmentsGrid.appendChild(card);
-                });
-                return;
-            }
 
             normalizedPeople.forEach(person => {
-                const task = assignments[person.name] || 'Rest';
+                const isActive = activePeople.get(person.name) !== false;
+                const task = assignments ? (assignments[person.name] || 'Rest') : 'Get Ready!';
+
                 const card = document.createElement('div');
-                card.className = 'person-card';
-                card.innerHTML = `<div class="person-name">${person.name}</div><div class="person-exercise">${task}</div>`;
+                card.className = `person-card${isActive ? '' : ' inactive'}`;
+                card.dataset.personName = person.name;
+                card.setAttribute('role', 'button');
+                card.setAttribute('tabindex', '0');
+                card.setAttribute('aria-pressed', String(isActive));
+                card.setAttribute(
+                    'aria-label',
+                    `${person.name}: ${isActive ? 'participating' : 'not participating'}. Click to toggle.`
+                );
+
+                const nameEl = document.createElement('div');
+                nameEl.className = 'person-name';
+                nameEl.textContent = person.name;
+
+                const exerciseEl = document.createElement('div');
+                exerciseEl.className = 'person-exercise';
+                exerciseEl.textContent = task;
+
+                card.appendChild(nameEl);
+                card.appendChild(exerciseEl);
                 assignmentsGrid.appendChild(card);
             });
         }
+
+        function togglePersonParticipation(personName) {
+            const currentState = activePeople.get(personName) !== false;
+            activePeople.set(personName, !currentState);
+            renderAssignments(steps[currentStepIndex]?.assignments || null);
+        }
+
+        assignmentsGrid.addEventListener('click', (event) => {
+            const card = event.target.closest('.person-card');
+            if (card && assignmentsGrid.contains(card)) {
+                togglePersonParticipation(card.dataset.personName);
+            }
+        });
+
+        assignmentsGrid.addEventListener('keydown', (event) => {
+            const card = event.target.closest('.person-card');
+            if (!card || !assignmentsGrid.contains(card)) return;
+
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                togglePersonParticipation(card.dataset.personName);
+            }
+        });
 
         function playBeep(durationMs, frequency) {
             if (!audioCtx) return;
@@ -668,18 +740,24 @@
         function speakAssignments(assignments) {
             if (!assignments) return;
 
-            const tasks = normalizedPeople.map(person => assignments[person.name]).filter(Boolean);
+            // Only announce people who are currently participating.
+            const activeAssignments = normalizedPeople.filter(person =>
+                activePeople.get(person.name) !== false && assignments[person.name]
+            );
+
+            if (activeAssignments.length === 0) return;
+
+            const tasks = activeAssignments.map(person => assignments[person.name]);
             const firstTask = tasks[0];
-            const allSame = tasks.length === normalizedPeople.length && tasks.every(task => task === firstTask);
+            const allSame = activeAssignments.length > 1 &&
+                            tasks.every(task => task === firstTask);
 
             let announcement = "Up next. ";
             if (allSame) {
                 announcement += `Everyone, ${firstTask}.`;
             } else {
-                normalizedPeople.forEach(person => {
-                    if (assignments[person.name]) {
-                        announcement += `${person.speechName}, ${assignments[person.name]}. `;
-                    }
+                activeAssignments.forEach(person => {
+                    announcement += `${person.speechName}, ${assignments[person.name]}. `;
                 });
             }
             window.speechSynthesis.speak(new SpeechSynthesisUtterance(announcement));
