@@ -59,7 +59,7 @@
             opacity: 0.9;
         }
 
-        #setup-container input {
+        #setup-container input[type="file"] {
             width: min(100%, 360px);
             padding: 12px;
             font-size: 1rem;
@@ -67,6 +67,22 @@
             background: rgba(255,255,255,0.14);
             border: 1px solid rgba(255,255,255,0.45);
             border-radius: 10px;
+        }
+
+        .setup-option {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 14px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .setup-option input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin: 0;
         }
 
         #app-container {
@@ -170,9 +186,23 @@
             font-size: clamp(4.5rem, 20vw, 18vw);
             font-weight: 800;
             line-height: 0.95;
-            letter-spacing: -0.04em;
+            letter-spacing: 0;
             font-variant-numeric: tabular-nums;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: baseline;
+            justify-content: center;
+        }
+
+        #timer-display .timer-digit,
+        #timer-display .timer-separator {
+            display: inline-flex;
+            width: 0.62em;
+            justify-content: center;
+        }
+
+        #timer-display .timer-separator {
+            width: 0.46em;
         }
 
         .progress-container {
@@ -203,6 +233,21 @@
             overflow-y: auto;
             padding: 0 clamp(0px, 3vw, 40px);
             align-content: center;
+        }
+
+        #total-remaining-time {
+            position: fixed;
+            right: clamp(10px, 2vw, 24px);
+            bottom: calc(clamp(8px, 1.5vw, 18px) + var(--safe-bottom));
+            font-size: clamp(0.8rem, 1.8vw, 1.05rem);
+            font-weight: 600;
+            line-height: 1;
+            padding: 6px 8px;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.18);
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.35);
+            display: none;
+            pointer-events: none;
         }
 
         .person-card {
@@ -348,6 +393,10 @@
         <h1>Interval Training Setup</h1>
         <p>Please select your workout configuration JSON file. During the workout, tap a person's card to toggle their participation.</p>
         <input type="file" id="json-upload" accept=".json" aria-label="Select workout configuration JSON file">
+        <label class="setup-option">
+            <input type="checkbox" id="show-total-time">
+            <span>Show total remaining workout time</span>
+        </label>
     </div>
 
     <div id="app-container">
@@ -377,6 +426,7 @@
         </div>
 
         <div id="assignments-grid"></div>
+        <div id="total-remaining-time" aria-live="polite">00:00</div>
     </div>
 
     <script>
@@ -388,6 +438,8 @@
         const timerDisplayEl = document.getElementById('timer-display');
         const progressBarFill = document.getElementById('progress-bar-fill');
         const assignmentsGrid = document.getElementById('assignments-grid');
+        const totalRemainingTimeEl = document.getElementById('total-remaining-time');
+        const showTotalTimeInput = document.getElementById('show-total-time');
         
         const btnPrev = document.getElementById('btn-prev');
         const btnPlayPause = document.getElementById('btn-playpause');
@@ -401,6 +453,8 @@
         let currentStepIndex = 0;
         let timeLeft = 0;
         let totalStepTime = 0;
+        let totalWorkoutSeconds = 0;
+        let showTotalTime = false;
         let isPaused = true;
         let audioCtx = null;
         let wakeLock = null; // Screen Wake Lock variable
@@ -416,7 +470,10 @@
         let announcementSpokenForStep = -1;
         let lastSpeechDurationMs = 0;
         const announcementSafetyMarginMs = 450;
+        const announcementEarlyStartMs = 1500;
         const defaultSpeechWordsPerMinute = 100;
+        let reminderTimeoutIds = [];
+        const spokenRemindersForStep = new Set();
 
         fileInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
@@ -452,13 +509,56 @@
             normalizedPeople.forEach(person => activePeople.set(person.name, true));
         }
 
+        function getAssignmentBlock(assignments) {
+            if (!assignments || typeof assignments !== 'object') {
+                return {
+                    users: assignments || null,
+                    durationSeconds: null,
+                    reminderText: '',
+                    reminderOnsetTime: null
+                };
+            }
+
+            const parsedDuration = Number(assignments.durationSeconds);
+            const parsedOnset = Number(assignments.reminderOnsetTime);
+            const users = assignments.users && typeof assignments.users === 'object'
+                ? assignments.users
+                : Object.fromEntries(
+                    Object.entries(assignments).filter(([key]) =>
+                        !['durationSeconds', 'reminderText', 'reminderOnsetTime', 'users'].includes(key)
+                    )
+                );
+
+            return {
+                users,
+                durationSeconds: Number.isFinite(parsedDuration) && parsedDuration > 0
+                    ? parsedDuration
+                    : null,
+                reminderText: typeof assignments.reminderText === 'string'
+                    ? assignments.reminderText.trim()
+                    : '',
+                reminderOnsetTime: Number.isFinite(parsedOnset) && parsedOnset >= 0
+                    ? parsedOnset
+                    : null
+            };
+        }
+
+        function getAssignmentUsers(assignments) {
+            return getAssignmentBlock(assignments).users;
+        }
+
+        function getAssignmentDuration(assignments, fallbackSeconds) {
+            const details = getAssignmentBlock(assignments);
+            return details.durationSeconds ?? fallbackSeconds;
+        }
+
         function buildWorkoutSteps() {
             steps = [];
             steps.push({
                 phase: 'prepare',
                 name: 'Get Ready',
                 duration: config.prepareSeconds,
-                assignments: null, 
+                assignments: null,
                 nextAssignments: config.exercises.length > 0 ? config.exercises[0].assignments : null
             });
 
@@ -466,7 +566,7 @@
                 steps.push({
                     phase: 'work',
                     name: ex.name,
-                    duration: config.defaultWorkSeconds,
+                    duration: getAssignmentDuration(ex.assignments, config.defaultWorkSeconds),
                     assignments: ex.assignments,
                     nextAssignments: ex.restAssignments || null
                 });
@@ -474,11 +574,13 @@
                 steps.push({
                     phase: 'rest',
                     name: ex.name,
-                    duration: config.defaultRestSeconds,
+                    duration: getAssignmentDuration(ex.restAssignments, config.defaultRestSeconds),
                     assignments: ex.restAssignments,
                     nextAssignments: config.exercises[index + 1] ? config.exercises[index + 1].assignments : null
                 });
             });
+
+            totalWorkoutSeconds = steps.reduce((sum, step) => sum + step.duration, 0);
         }
 
         // Screen Wake Lock functionality
@@ -504,6 +606,8 @@
         });
 
         function initApp() {
+            showTotalTime = showTotalTimeInput.checked;
+            totalRemainingTimeEl.style.display = showTotalTime ? 'block' : 'none';
             setupContainer.style.display = 'none';
             appContainer.style.display = 'flex';
             currentStepIndex = 0;
@@ -524,6 +628,7 @@
             stepDurationMs = totalStepTime * 1000;
             stepStartTime = performance.now();
             timeLeft = totalStepTime;
+            updateTotalRemainingTime();
             
             document.body.className = step.phase; 
             roundNameEl.textContent = step.name;
@@ -534,6 +639,7 @@
             progressBarFill.style.width = '0%';
 
             announcementSpokenForStep = -1;
+            spokenRemindersForStep.clear();
             cancelAnnouncement();
 
             if (audioCtx && audioCtx.state !== 'suspended') {
@@ -541,15 +647,19 @@
                 playBeep(step.type === 'work' ? 950 : 440, step.type === 'work' ? 260 : 800);
             }
 
-            if (!isPaused) scheduleNextAnnouncement(step);
+            if (!isPaused) {
+                scheduleNextAnnouncement(step);
+                scheduleReminders(step);
+            }
         }
 
         function renderAssignments(assignments) {
             assignmentsGrid.innerHTML = '';
 
+            const userAssignments = getAssignmentUsers(assignments);
             normalizedPeople.forEach(person => {
                 const isActive = activePeople.get(person.name) !== false;
-                const task = assignments ? (assignments[person.name] || 'Rest') : 'Get Ready!';
+                const task = userAssignments ? (userAssignments[person.name] || 'Rest') : 'Get Ready!';
 
                 const card = document.createElement('div');
                 card.className = `person-card${isActive ? '' : ' inactive'}`;
@@ -629,6 +739,8 @@
             if (isPaused) {
                 cancelAnimationFrame(animationFrameId);
                 cancelAnnouncement();
+                reminderTimeoutIds.forEach(clearTimeout);
+                reminderTimeoutIds = [];
                 iconPlay.style.display = 'block';
                 iconPause.style.display = 'none';
             } else {
@@ -640,6 +752,7 @@
 
                 stepStartTime = performance.now() - ((totalStepTime - timeLeft) * 1000);
                 scheduleNextAnnouncement(steps[currentStepIndex]);
+                scheduleReminders(steps[currentStepIndex]);
                 startTimerLoop();
 
                 iconPlay.style.display = 'none';
@@ -659,6 +772,7 @@
 
                 const progressPercent = Math.min(100, (elapsedMs / stepDurationMs) * 100);
                 progressBarFill.style.width = progressPercent + '%';
+                updateTotalRemainingTime();
 
                 if (newTimeLeft !== timeLeft) {
                     timeLeft = newTimeLeft;
@@ -684,15 +798,42 @@
             animationFrameId = requestAnimationFrame(frame);
         }
 
+        function formatTime(totalSeconds) {
+            const safeSeconds = Math.max(0, Math.ceil(totalSeconds));
+            const minutes = Math.floor(safeSeconds / 60);
+            const seconds = safeSeconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
         function updateTimeDisplay() {
-            const minutes = Math.floor(timeLeft / 60);
-            const seconds = timeLeft % 60;
-            timerDisplayEl.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            const value = formatTime(timeLeft);
+            timerDisplayEl.innerHTML = '';
+            [...value].forEach(char => {
+                const span = document.createElement('span');
+                span.className = char === ':' ? 'timer-separator' : 'timer-digit';
+                span.textContent = char;
+                timerDisplayEl.appendChild(span);
+            });
+        }
+
+        function getElapsedWorkoutSeconds() {
+            let completed = 0;
+            for (let i = 0; i < currentStepIndex; i++) completed += steps[i].duration;
+            const elapsedCurrent = Math.min(totalStepTime, Math.max(0, performance.now() - stepStartTime) / 1000);
+            return Math.min(totalWorkoutSeconds, completed + elapsedCurrent);
+        }
+
+        function updateTotalRemainingTime() {
+            if (!showTotalTime || !steps.length) return;
+            const remaining = Math.max(0, totalWorkoutSeconds - getElapsedWorkoutSeconds());
+            totalRemainingTimeEl.textContent = `Total: ${formatTime(remaining)}`;
         }
 
         function skipNext() {
             cancelAnimationFrame(animationFrameId);
             cancelAnnouncement();
+            reminderTimeoutIds.forEach(clearTimeout);
+            reminderTimeoutIds = [];
             window.speechSynthesis.cancel();
             if (currentStepIndex < steps.length - 1) {
                 currentStepIndex++;
@@ -706,6 +847,8 @@
         function skipPrev() {
             cancelAnimationFrame(animationFrameId);
             cancelAnnouncement();
+            reminderTimeoutIds.forEach(clearTimeout);
+            reminderTimeoutIds = [];
             window.speechSynthesis.cancel();
             if (currentStepIndex > 0) {
                 currentStepIndex--;
@@ -717,6 +860,8 @@
         function endWorkout() {
             cancelAnimationFrame(animationFrameId);
             cancelAnnouncement();
+            reminderTimeoutIds.forEach(clearTimeout);
+            reminderTimeoutIds = [];
             window.speechSynthesis.cancel();
             isPaused = true;
             iconPlay.style.display = 'block';
@@ -725,19 +870,23 @@
             document.body.style.backgroundColor = 'var(--color-bg)';
             roundNameEl.textContent = "Workout Complete";
             phaseNameEl.textContent = "Done";
-            timerDisplayEl.textContent = "00:00";
+            updateTimeDisplay();
             progressBarFill.style.width = '100%';
+            totalRemainingTimeEl.textContent = 'Total: 00:00';
             assignmentsGrid.innerHTML = '';
         }
 
         function buildAnnouncementText(assignments) {
-            if (!assignments) return '';
+            const block = getAssignmentBlock(assignments);
+            const userAssignments = block.users;
+            if (!userAssignments) return '';
+
             const activeAssignments = normalizedPeople.filter(person =>
-                activePeople.get(person.name) !== false && assignments[person.name]
+                activePeople.get(person.name) !== false && userAssignments[person.name]
             );
             if (!activeAssignments.length) return '';
 
-            const tasks = activeAssignments.map(person => assignments[person.name]);
+            const tasks = activeAssignments.map(person => userAssignments[person.name]);
             const allSame = activeAssignments.length > 1 && tasks.every(task => task === tasks[0]);
 
             let announcement = 'Up next. ';
@@ -745,7 +894,7 @@
                 announcement += `Everyone, ${tasks[0]}.`;
             } else {
                 activeAssignments.forEach(person => {
-                    announcement += `${person.speechName}, ${assignments[person.name]}. `;
+                    announcement += `${person.speechName}, ${userAssignments[person.name]}. `;
                 });
             }
             return announcement.trim();
@@ -775,6 +924,26 @@
             }
         }
 
+        function scheduleReminders(step) {
+            reminderTimeoutIds.forEach(clearTimeout);
+            reminderTimeoutIds = [];
+
+            if (!step || !step.assignments || isPaused) return;
+
+            const block = getAssignmentBlock(step.assignments);
+            if (!block.reminderText || block.reminderOnsetTime === null) return;
+
+            const onsetMs = block.reminderOnsetTime * 1000;
+            if (onsetMs < 0 || onsetMs >= stepDurationMs) return;
+
+            const timeoutId = setTimeout(() => {
+                if (isPaused || currentStepIndex >= steps.length || steps[currentStepIndex] !== step) return;
+                speakText(`Reminder. ${block.reminderText}.`);
+            }, Math.max(0, onsetMs - Math.max(0, performance.now() - stepStartTime)));
+
+            reminderTimeoutIds.push(timeoutId);
+        }
+
         function scheduleNextAnnouncement(step) {
             cancelAnnouncement();
             if (!step || !step.nextAssignments || isPaused || announcementSpokenForStep === currentStepIndex) return;
@@ -785,7 +954,10 @@
             const estimatedMs = estimateSpeechDurationMs(text);
             const elapsedMs = performance.now() - stepStartTime;
             const remainingMs = Math.max(0, stepDurationMs - elapsedMs);
-            const delayMs = Math.max(0, remainingMs - estimatedMs - announcementSafetyMarginMs);
+            const delayMs = Math.max(
+                0,
+                remainingMs - estimatedMs - announcementSafetyMarginMs - announcementEarlyStartMs
+            );
 
             announcementTimeoutId = setTimeout(() => {
                 announcementTimeoutId = null;
@@ -795,22 +967,21 @@
             }, delayMs);
         }
 
-        function speakAssignments(assignments) {
-            const announcement = buildAnnouncementText(assignments);
-            if (!announcement) return;
+        function speakText(text) {
+            if (!text) return;
 
             window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(announcement);
-            
+            const utterance = new SpeechSynthesisUtterance(text);
+
             // Voice selection logic
             const isAndroid = /Android/i.test(navigator.userAgent);
             if (!isAndroid) {
                 const voices = window.speechSynthesis.getVoices();
-                
+
                 // Target standard default female voices available on your system
                 const defaultFemaleVoice = voices.find(v => /(libby|zira|aria|female)/i.test(v.name));
                 console.log(defaultFemaleVoice);
-                
+
                 if (defaultFemaleVoice) {
                     utterance.voice = defaultFemaleVoice;
                 }
@@ -831,6 +1002,10 @@
             };
 
             window.speechSynthesis.speak(utterance);
+        }
+
+        function speakAssignments(assignments) {
+            speakText(buildAnnouncementText(assignments));
         }
 
         btnPlayPause.addEventListener('click', togglePlayPause);
